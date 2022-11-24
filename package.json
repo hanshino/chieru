@@ -2,5 +2,15 @@
   "name": "chieru",
   "version": "1.0.0",
   "main": "index.js",
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.2.0",
+    "express": "^4.18.2",
+    "sharp": "^0.31.2"
+  },
+  "devDependencies": {
+    "@types/axios": "^0.14.0",
+    "@types/express": "^4.17.14",
+    "@types/sharp": "^0.31.0"
+  }
 }
