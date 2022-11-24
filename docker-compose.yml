@@ -1,0 +1,11 @@
+version: '3.9'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: chieru
+    restart: always
+    volumes:
+      - ./public:/app/public

@@ -1,0 +1,26 @@
+version: '3.9'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: chieru
+    restart: always
+    networks:
+      - traefik
+    volumes:
+      - ./public:/app/public
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.chieru.rule=Host(`chieru.randosoru.me`)"
+      - "traefik.http.routers.chieru.entrypoints=websecure"
+      - "traefik.http.routers.chieru.tls=true"
+      - "traefik.http.routers.chieru.tls.certresolver=leresolver"
+      - "traefik.docker.network=traefik"
+
+networks:
+  traefik:
+    external: true
+    name: traefik
+      
