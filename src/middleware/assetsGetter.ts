@@ -84,7 +84,7 @@ async function writePNGFile(filePath: string, data: Buffer) {
   }
 
   const pngBuffer = await sharp(data).toFormat("png").toBuffer();
-  writeFileSync(filePath, pngBuffer);
+  writeFileSync(filePath, new Uint8Array(pngBuffer));
 }
 
 function checkIfFileExists(filePath: string): boolean {
