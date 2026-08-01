@@ -18,6 +18,9 @@ FROM node:slim
 # Create app directory
 WORKDIR /app
 
+# node:slim has no yarn baked in; corepack (bundled since Node 16.10) provides it.
+RUN corepack enable
+
 # Install app dependencies
 COPY package.json yarn.lock ./
 
