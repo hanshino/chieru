@@ -1,5 +1,12 @@
 import { Request, Response, NextFunction } from "express";
-import { accessSync, constants, writeFileSync, mkdirSync } from "node:fs";
+import {
+  accessSync,
+  constants,
+  writeFileSync,
+  mkdirSync,
+  renameSync,
+  unlinkSync,
+} from "node:fs";
 import path from "node:path";
 import axios from "axios";
 import { format } from "node:util";
@@ -11,6 +18,10 @@ import {
   princessSkillImage,
 } from "../config/assets.config";
 import sharp from "sharp";
+
+// Upstream is a third-party mirror; without a timeout a stalled connection
+// holds the request (and the client's <img>) open forever.
+const UPSTREAM_TIMEOUT_MS = 10000;
 
 export const unitCharacterGetter = unitProcesser({
   urlTemplate: princessUnitCharacter,
@@ -49,23 +60,55 @@ function unitProcesser(options: UnitProcesserOptions) {
 
     const filePath = path.resolve(dirPath, `${unitId}.png`);
     if (checkIfFileExists(filePath)) {
-      // no need to download the file
-      next();
+      // Cache hit: hand it straight to express.static. Must return, otherwise
+      // every cached request re-downloads, re-converts and overwrites the file.
+      return next();
     }
+
     const url = format(urlTemplate, unitId);
-    // download the file
+
+    let data: Buffer;
+    let upstreamStatus: number | undefined;
     try {
       const result = await axios.get(url, {
         responseType: "arraybuffer",
+        timeout: UPSTREAM_TIMEOUT_MS,
       });
-      await writePNGFile(filePath, result.data);
+      data = result.data;
+      upstreamStatus = result.status;
     } catch (err) {
-      res.sendStatus(404);
+      upstreamStatus = axios.isAxiosError(err) ? err.response?.status : undefined;
+      logAssetError("upstream", url, filePath, err, upstreamStatus);
+      // Only a confirmed upstream 404 means the asset really does not exist.
+      // Timeouts, connection resets and upstream 5xx are gateway failures.
+      sendStatus(res, upstreamStatus === 404 ? 404 : 502);
+      return;
+    }
+
+    let pngBuffer: Buffer;
+    try {
+      pngBuffer = await sharp(data).toFormat("png").toBuffer();
+    } catch (err) {
+      // Upstream answered, but not with a decodable image (HTML error page,
+      // truncated body, ...) - that is an upstream problem, not a missing file.
+      logAssetError("convert", url, filePath, err, upstreamStatus);
+      sendStatus(res, 502);
+      return;
+    }
+
+    try {
+      writePNGFile(filePath, pngBuffer);
+    } catch (err) {
+      logAssetError("write", url, filePath, err, upstreamStatus);
+      sendStatus(res, 503);
       return;
     }
 
     // continue to the next middleware
-    next();
+    if (res.headersSent || res.writableEnded) {
+      return;
+    }
+    return next();
   };
 }
 
@@ -76,15 +119,65 @@ function retriveUnitIdFromUrl(url: string): string {
   return unitId;
 }
 
-async function writePNGFile(filePath: string, data: Buffer) {
+let tempFileSeq = 0;
+
+function writePNGFile(filePath: string, pngBuffer: Buffer) {
   const folderPath = path.dirname(filePath);
 
   if (!checkFolderAccessible(folderPath)) {
     mkdirSync(folderPath, { recursive: true });
   }
 
-  const pngBuffer = await sharp(data).toFormat("png").toBuffer();
-  writeFileSync(filePath, new Uint8Array(pngBuffer));
+  // Temp file lives in the target directory so the rename stays inside one
+  // filesystem (the mounted public/ cache) - a cross-device rename would fail
+  // with EXDEV and is not atomic. pid + seq keeps it unique per process and
+  // per request, so concurrent writers never share a temp file.
+  const tempPath = `${filePath}.${process.pid}-${Date.now()}-${tempFileSeq++}.tmp`;
+
+  try {
+    writeFileSync(tempPath, new Uint8Array(pngBuffer));
+    // rename(2) on Linux atomically replaces the destination: readers either
+    // see the old complete file or the new complete file, never a partial one.
+    // Several first-time requests for the same asset may all rename; last one
+    // wins and every response is a complete PNG.
+    renameSync(tempPath, filePath);
+  } catch (err) {
+    try {
+      unlinkSync(tempPath);
+    } catch (cleanupErr) {
+      // Temp file may never have been created; nothing left to clean up.
+    }
+    throw err;
+  }
+}
+
+function sendStatus(res: Response, status: number) {
+  // Never touch the response twice (e.g. client already aborted).
+  if (res.headersSent || res.writableEnded) {
+    return;
+  }
+  res.sendStatus(status);
+}
+
+function logAssetError(
+  stage: "upstream" | "convert" | "write",
+  url: string,
+  filePath: string,
+  err: unknown,
+  upstreamStatus?: number
+) {
+  const code =
+    typeof err === "object" && err !== null && "code" in err
+      ? String((err as { code?: unknown }).code)
+      : undefined;
+  const detail =
+    err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+
+  console.error(
+    `[assets] ${stage} failure url=${url} path=${filePath} upstreamStatus=${
+      upstreamStatus ?? "none"
+    } code=${code ?? "none"} error=${detail}`
+  );
 }
 
 function checkIfFileExists(filePath: string): boolean {
