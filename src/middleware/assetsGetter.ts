@@ -56,7 +56,17 @@ interface UnitProcesserOptions {
 function unitProcesser(options: UnitProcesserOptions) {
   const { dirPath, urlTemplate } = options;
   return async function (req: Request, res: Response, next: NextFunction) {
-    const unitId = retriveUnitIdFromUrl(req.url);
+    // req.path, not req.url: req.url still carries `?nonce=1`, which would end
+    // up in both the cache filename and the upstream id.
+    const unitId = retriveUnitIdFromUrl(req.path);
+    if (unitId === null) {
+      // Not an asset this route can serve. Reject before any upstream request,
+      // Sharp work or cache write. 404 rather than 400 so no new public
+      // contract appears; a bad basename is simply "no such asset".
+      // ponytail: no log here, invalid paths are attacker-controlled log volume.
+      sendStatus(res, 404);
+      return;
+    }
 
     const filePath = path.resolve(dirPath, `${unitId}.png`);
     if (checkIfFileExists(filePath)) {
@@ -112,11 +122,15 @@ function unitProcesser(options: UnitProcesserOptions) {
   };
 }
 
-function retriveUnitIdFromUrl(url: string): string {
-  const urlPieces = url.split("/");
-  const unitName = urlPieces.pop() as string;
-  const unitId = unitName.replace(".png", "");
-  return unitId;
+// Every route serves numeric-id PNGs from one flat directory, so the only path
+// shape they can ever fulfil is "/<digits>.png". Returns null for anything
+// else, so the id can never carry a path separator, traversal or query string
+// into the cache path / upstream url. Matching the whole path (not just the
+// basename) also rejects "/sub/123.png", which express.static could never
+// serve anyway.
+function retriveUnitIdFromUrl(urlPath: string): string | null {
+  const matched = /^\/(\d+)\.png$/.exec(urlPath);
+  return matched === null ? null : matched[1];
 }
 
 let tempFileSeq = 0;
