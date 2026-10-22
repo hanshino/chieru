@@ -1,4 +1,4 @@
-FROM node:lts as builder
+FROM node:24.22.1-trixie AS builder
 
 # Create app directory
 WORKDIR /usr/src/app
@@ -13,7 +13,7 @@ COPY . .
 
 RUN yarn build
 
-FROM node:slim
+FROM node:24.22.1-trixie-slim
 
 # Create app directory
 WORKDIR /app
